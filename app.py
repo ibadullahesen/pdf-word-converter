@@ -1,3 +1,13 @@
+from flask import Flask, request, send_file, render_template_string
+import pdf2docx
+from pdf2docx import Converter
+import os
+import uuid
+
+app = Flask(__name__)
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -43,7 +53,6 @@ HTML = """
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('file');
 
-        // Drag & drop dəstəyi
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropZone.addEventListener(eventName, preventDefaults, false);
         });
@@ -76,7 +85,6 @@ HTML = """
             const files = dt.files;
             if (files.length > 0 && files[0].type === 'application/pdf') {
                 fileInput.files = files;
-                // Form-u avtomatik submit et (istəyirsənsə)
                 document.querySelector('form').submit();
             } else {
                 alert('Yalnız PDF faylı qəbul edilir!');
@@ -86,3 +94,36 @@ HTML = """
 </body>
 </html>
 """
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        pdf_file = request.files["pdf"]
+        if pdf_file and pdf_file.filename.endswith(".pdf"):
+            pdf_path = os.path.join(UPLOAD_FOLDER, str(uuid.uuid4()) + ".pdf")
+            docx_path = pdf_path.replace(".pdf", ".docx")
+            pdf_file.save(pdf_path)
+            
+            cv = Converter(pdf_path)
+            cv.convert(docx_path, start=0, end=None)
+            cv.close()
+            
+            # Köhnə faylı sil
+            os.remove(pdf_path)
+            
+            filename = os.path.basename(docx_path)
+            return render_template_string(HTML, result="Uğurla çevrildi!", filename=filename)
+    
+    return render_template_string(HTML)
+
+@app.route("/download/<filename>")
+def download(filename):
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    if os.path.exists(file_path):
+        return send_file(file_path, as_attachment=True, download_name="çevirilmiş_sənəd.docx")
+    return "Fayl tapılmadı", 404
+
+# RENDER ÜÇÜN GUNICORN İLE ÇALIŞTIR
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
