@@ -1,6 +1,8 @@
 from flask import Flask, request, send_file, render_template_string
-import pdf2docx
-from pdf2docx import Converter
+import PyPDF2
+from docx import Document
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import os
 import uuid
 import glob
@@ -8,11 +10,11 @@ from datetime import datetime, timedelta
 from threading import Thread
 import time
 import logging
+import io
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB maksimum fayl ölçüsü
-MAX_PROCESSING_TIME = 60  # 60 saniyə maksimum prosesləmə müddəti
 CLEANUP_INTERVAL = 3600  # Hər 1 saat sil
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -43,6 +45,73 @@ def background_cleanup():
         last_cleanup_time = current_time
         cleanup_old_files()
 
+def convert_pdf_to_docx(pdf_path, docx_path):
+    """PyPDF2 istifadə edərək PDF-dən mətn çıxart və Word-ə yaz"""
+    try:
+        doc = Document()
+        
+        with open(pdf_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            total_pages = len(pdf_reader.pages)
+            
+            for page_num, page in enumerate(pdf_reader.pages, 1):
+                try:
+                    # Səhifəni çıxart
+                    text = page.extract_text()
+                    
+                    if text:
+                        text = clean_text(text)
+                        
+                        # Səhifə başlığı əlavə et
+                        if page_num > 1:
+                            doc.add_page_break()
+                        
+                        # Mətn əlavə et
+                        paragraph = doc.add_paragraph(text)
+                        paragraph.style = 'Normal'
+                        
+                        print(f"[INFO] ({page_num}/{total_pages}) Səhifə uğurla çevrildi")
+                    else:
+                        print(f"[WARNING] ({page_num}/{total_pages}) Səhifədə mətn tapılmadı")
+                        
+                except Exception as e:
+                    print(f"[ERROR] ({page_num}/{total_pages}) Səhifə xətası: {str(e)}")
+                    # Xəta olsa belə, sonrakı səhifəyə geç
+                    if page_num > 1:
+                        doc.add_page_break()
+                    doc.add_paragraph(f"[Səhifə {page_num} çevrilə bilmədi]")
+        
+        # Word sənədini saxla
+        doc.save(docx_path)
+        print(f"[INFO] Word sənədi uğurla yaradıldı: {docx_path}")
+        
+    except Exception as e:
+        print(f"[ERROR] Çevirən xəta: {str(e)}")
+        raise
+
+def clean_text(text):
+    """XML-uyğun olmayan simvolları sil/əvəz et"""
+    if not text:
+        return ""
+    
+    # NULL bytes və idarəetmə simvollarını sil
+    cleaned = ""
+    for char in text:
+        code = ord(char)
+        # XML-uyğun simvollar: 0x9, 0xA, 0xD, 0x20-0xD7FF, 0xE000-0xFFFD
+        if (code == 0x9 or code == 0xA or code == 0xD or 
+            (0x20 <= code <= 0xD7FF) or (0xE000 <= code <= 0xFFFD)):
+            cleaned += char
+        elif code < 32:
+            # Idarəetmə simvollarını boşluğa çevir
+            cleaned += " "
+    
+    # Çoxlu boşluqları tək boşluğa çevir
+    while "  " in cleaned:
+        cleaned = cleaned.replace("  ", " ")
+    
+    return cleaned.strip()
+
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -56,7 +125,7 @@ HTML = """
         <h1 class="text-5xl font-black text-center bg-gradient-to-r from-cyan-400 to-purple-400 bg-clip-text text-transparent mb-4">
             PDF → Word Çevirici
         </h1>
-        <p class="text-gray-300 text-center mb-8">Şəkillər, cədvəllər, Azərbaycan hərfləri – hamısı qorunur</p>
+        <p class="text-gray-300 text-center mb-8">Bütün səhifələr tam şəkildə çevrilir</p>
         
         <form method="post" enctype="multipart/form-data" class="space-y-6" onsubmit="handleSubmit(event)">
             <div class="border-2 border-dashed border-cyan-400 rounded-2xl p-10 text-center hover:border-cyan-300 transition" id="drop-zone">
@@ -258,6 +327,9 @@ def index():
                 error=f"❌ Fayl çox böyükdür! Maksimum {MAX_FILE_SIZE // (1024*1024)} MB qəbul edilir."
             )
         
+        pdf_path = None
+        docx_path = None
+        
         try:
             unique_id = str(uuid.uuid4())
             pdf_path = os.path.join(UPLOAD_FOLDER, f"{unique_id}.pdf")
@@ -272,20 +344,7 @@ def index():
                     error=f"❌ Fayl çox böyükdür! Maksimum {MAX_FILE_SIZE // (1024*1024)} MB qəbul edilir."
                 )
             
-            try:
-                cv = Converter(pdf_path)
-                cv.convert(docx_path, start=0, end=None)
-                cv.close()
-            except Exception as e:
-                logger.warning(f"Birinci sınaqda xəta: {str(e)}")
-                # Səhifə-səhifə dönüştürmə cəhdi
-                try:
-                    cv = Converter(pdf_path)
-                    cv.convert(docx_path)  # Default parametrlərlə yenidən cəhd
-                    cv.close()
-                except Exception as e2:
-                    logger.error(f"Dönüştürmə uğursuz oldu: {str(e2)}")
-                    raise
+            convert_pdf_to_docx(pdf_path, docx_path)
             
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
@@ -299,13 +358,16 @@ def index():
             
         except Exception as e:
             logger.error(f"PDF çevirən xəta: {str(e)}")
-            # Xəta baş verərsə, hər iki faylı sil
-            for file_path in [pdf_path, docx_path]:
-                if os.path.exists(file_path):
-                    try:
-                        os.remove(file_path)
-                    except:
-                        pass
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    os.remove(pdf_path)
+                except:
+                    pass
+            if docx_path and os.path.exists(docx_path):
+                try:
+                    os.remove(docx_path)
+                except:
+                    pass
             
             return render_template_string(
                 HTML, 
