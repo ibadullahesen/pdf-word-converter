@@ -1,13 +1,3 @@
-from flask import Flask, request, send_file, render_template_string
-import pdf2docx
-from pdf2docx import Converter
-import os
-import uuid
-
-app = Flask(__name__)
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -24,11 +14,12 @@ HTML = """
         <p class="text-gray-300 text-center mb-8">Şəkillər, cədvəllər, Azərbaycan hərfləri – hamısı qorunur</p>
         
         <form method="post" enctype="multipart/form-data" class="space-y-6">
-            <div class="border-2 border-dashed border-cyan-400 rounded-2xl p-10 text-center">
+            <div class="border-2 border-dashed border-cyan-400 rounded-2xl p-10 text-center hover:border-cyan-300 transition" id="drop-zone">
                 <input type="file" name="pdf" accept=".pdf" required class="hidden" id="file">
-                <label for="file" class="cursor-pointer">
+                <label for="file" class="cursor-pointer block h-full">
                     <div class="text-6xl mb-4">↑</div>
-                    <p class="text-xl text-cyan-300 font-bold">PDF faylı seç və ya bura at</p>
+                    <p class="text-xl text-cyan-300 font-bold">PDF faylı seç və ya bura sürükle</p>
+                    <p class="text-sm text-gray-400 mt-2">Drag & drop dəstəklənir</p>
                 </label>
             </div>
             <button type="submit" class="w-full py-6 bg-gradient-to-r from-cyan-500 to-purple-600 text-white text-2xl font-black rounded-2xl hover:scale-105 transition">
@@ -47,33 +38,51 @@ HTML = """
         
         <p class="text-center text-gray-500 mt-10 text-sm">© 2025 AxtarGet – Azərbaycanın ən sürətlisi</p>
     </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file');
+
+        // Drag & drop dəstəyi
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+
+        function highlight(e) {
+            dropZone.classList.add('bg-cyan-500/20');
+        }
+
+        function unhighlight(e) {
+            dropZone.classList.remove('bg-cyan-500/20');
+        }
+
+        dropZone.addEventListener('drop', handleDrop, false);
+
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length > 0 && files[0].type === 'application/pdf') {
+                fileInput.files = files;
+                // Form-u avtomatik submit et (istəyirsənsə)
+                document.querySelector('form').submit();
+            } else {
+                alert('Yalnız PDF faylı qəbul edilir!');
+            }
+        }
+    </script>
 </body>
 </html>
 """
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    if request.method == "POST":
-        pdf_file = request.files["pdf"]
-        if pdf_file and pdf_file.filename.endswith(".pdf"):
-            pdf_path = os.path.join(UPLOAD_FOLDER, str(uuid.uuid4()) + ".pdf")
-            docx_path = pdf_path.replace(".pdf", ".docx")
-            pdf_file.save(pdf_path)
-            
-            cv = Converter(pdf_path)
-            cv.convert(docx_path)
-            cv.close()
-            
-            filename = os.path.basename(docx_path)
-            return render_template_string(HTML, result="Uğurla çevrildi!", filename=filename)
-    
-    return render_template_string(HTML)
-
-@app.route("/download/<filename>")
-def download(filename):
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-    return send_file(file_path, as_attachment=True, download_name="çevirilmiş_sənəd.docx")
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
