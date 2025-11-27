@@ -15,7 +15,6 @@ MAX_FILE_SIZE = 5 * 1024 * 1024
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Sadə logging konfiqurasiyası
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -256,20 +255,20 @@ HTML = """
 
         function showError(message) {
             resultContainer.innerHTML = `
-                <div class="mt-6 p-4 bg-red-500/20 border border-red-400 rounded-2xl text-center">
-                    <p class="text-red-300 font-bold">❌ ${message}</p>
+                <div class="mt-6 p-6 bg-red-500/20 border border-red-400 rounded-2xl text-center">
+                    <p class="text-red-300 text-xl font-bold">❌ ${message}</p>
                 </div>
             `;
         }
 
         function showSuccess(message, downloadUrl) {
             resultContainer.innerHTML = `
-                <div class="mt-6 p-4 bg-green-500/20 border border-green-400 rounded-2xl text-center animate-pulse">
-                    <p class="text-green-300 font-bold text-lg mb-3">${message}</p>
-                    <a href="${downloadUrl}" class="inline-block px-6 py-3 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 transition">
-                        📥 WORD FAYLINI ENDİR
+                <div class="mt-6 p-6 bg-green-500/20 border border-green-400 rounded-2xl text-center animate-pulse">
+                    <p class="text-green-300 text-xl font-bold mb-4">${message}</p>
+                    <a href="${downloadUrl}" class="inline-block px-8 py-4 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 transition">
+                        📥 WORD FAYLINI ENDİR (.docx)
                     </a>
-                    <p class="text-gray-300 text-sm mt-2">Yeni fayl çevirmək üçün yuxarıdan başqa PDF seçin</p>
+                    <p class="text-gray-300 text-sm mt-3">Yeni fayl çevirmək üçün yuxarıdan başqa PDF seçə bilərsiniz</p>
                 </div>
             `;
         }
@@ -319,7 +318,7 @@ HTML = """
             }
         }
 
-        // Form göndərilməsi
+        // Form göndərilməsi - JSON API ilə
         uploadForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -336,42 +335,26 @@ HTML = """
             progressContainer.classList.remove('hidden');
             resultContainer.innerHTML = '';
             
-            updateProgress(10, 'Fayl yüklənir...');
+            updateProgress(20, 'Fayl yüklənir...');
 
             try {
-                updateProgress(30, 'PDF oxunur...');
-                
-                const response = await fetch('/', {
+                const response = await fetch('/convert', {
                     method: 'POST',
                     body: formData
                 });
 
-                updateProgress(70, 'Word sənədi hazırlanır...');
-
-                const html = await response.text();
+                const result = await response.json();
                 
-                // HTML cavabını parse et
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                
-                const errorElem = doc.querySelector('.bg-red-500\\\\/20');
-                const successElem = doc.querySelector('.bg-green-500\\\\/20');
-                
-                if (errorElem) {
-                    const errorText = errorElem.textContent.trim();
-                    showError(errorText);
-                } else if (successElem) {
-                    const successText = successElem.querySelector('.text-green-300').textContent.trim();
-                    const downloadLink = successElem.querySelector('a');
-                    const downloadUrl = downloadLink ? downloadLink.href : null;
-                    
+                if (response.ok && result.success) {
                     updateProgress(100, 'Tamamlandı!');
-                    showSuccess(successText, downloadUrl);
+                    showSuccess(result.message, result.download_url);
                 } else {
-                    showError('Gözlənilməz xəta baş verdi!');
+                    updateProgress(100, 'Xəta!');
+                    showError(result.error || 'Naməlum xəta baş verdi!');
                 }
 
             } catch (error) {
+                updateProgress(100, 'Xəta!');
                 showError('Şəbəkə xətası: ' + error.message);
             } finally {
                 setTimeout(() => {
@@ -385,80 +368,81 @@ HTML = """
 </html>
 """
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET"])
 def index():
-    # Hər dəfə səhifə yüklənəndə köhnə faylları təmizlə
+    """Əsas səhifə"""
     cleanup_old_files()
-    
-    if request.method == "POST":
-        if 'pdf' not in request.files:
-            return render_template_string(HTML, error="❌ Fayl seçilməyib!")
-        
-        pdf_file = request.files['pdf']
-        
-        if pdf_file.filename == '':
-            return render_template_string(HTML, error="❌ Fayl seçilməyib!")
-        
-        if not pdf_file.filename.lower().endswith('.pdf'):
-            return render_template_string(HTML, error="❌ Yalnız PDF faylı qəbul edilir!")
-        
-        # Unikal fayl adları yarat
-        unique_id = str(uuid.uuid4())
-        pdf_path = os.path.join(UPLOAD_FOLDER, f"{unique_id}.pdf")
-        docx_path = os.path.join(UPLOAD_FOLDER, f"{unique_id}.docx")
-        
-        try:
-            # PDF faylını yadda saxla
-            pdf_file.save(pdf_path)
-            
-            # Fayl ölçüsünü yoxla
-            file_size = os.path.getsize(pdf_path)
-            if file_size > MAX_FILE_SIZE:
-                os.remove(pdf_path)
-                return render_template_string(HTML, error="❌ Fayl çox böyükdür! Maksimum 5 MB.")
-            
-            logger.info(f"PDF yükləndi: {pdf_path} ({file_size} bytes)")
-            
-            # Çevirmə prosesi
-            update_progress = lambda p, t: None  # Progress funksiyası
-            
-            success = convert_pdf_to_docx(pdf_path, docx_path)
-            
-            # PDF faylını sil
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-            
-            if success and os.path.exists(docx_path):
-                return render_template_string(
-                    HTML, 
-                    result="✅ PDF uğurla Word sənədinə çevrildi!", 
-                    filename=f"{unique_id}.docx"
-                )
-            else:
-                return render_template_string(
-                    HTML, 
-                    error="❌ PDF çevrilə bilmədi. Zəhmət olmasa başqa fayl sınayın."
-                )
-                
-        except Exception as e:
-            logger.error(f"Ümumi xəta: {e}")
-            # Təmizlik
-            for path in [pdf_path, docx_path]:
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except:
-                        pass
-            
-            return render_template_string(
-                HTML, 
-                error=f"❌ Xəta: {str(e)}"
-            )
-    
     return render_template_string(HTML)
+
+@app.route("/convert", methods=["POST"])
+def convert():
+    """PDF-dən Word-ə çevirən API endpoint"""
+    if 'pdf' not in request.files:
+        return jsonify({'success': False, 'error': '❌ Fayl seçilməyib!'})
+    
+    pdf_file = request.files['pdf']
+    
+    if pdf_file.filename == '':
+        return jsonify({'success': False, 'error': '❌ Fayl seçilməyib!'})
+    
+    if not pdf_file.filename.lower().endswith('.pdf'):
+        return jsonify({'success': False, 'error': '❌ Yalnız PDF faylı qəbul edilir!'})
+    
+    # Unikal fayl adları yarat
+    unique_id = str(uuid.uuid4())
+    pdf_path = os.path.join(UPLOAD_FOLDER, f"{unique_id}.pdf")
+    docx_path = os.path.join(UPLOAD_FOLDER, f"{unique_id}.docx")
+    
+    try:
+        # PDF faylını yadda saxla
+        pdf_file.save(pdf_path)
+        
+        # Fayl ölçüsünü yoxla
+        file_size = os.path.getsize(pdf_path)
+        if file_size > MAX_FILE_SIZE:
+            os.remove(pdf_path)
+            return jsonify({'success': False, 'error': '❌ Fayl çox böyükdür! Maksimum 5 MB.'})
+        
+        logger.info(f"PDF yükləndi: {pdf_path} ({file_size} bytes)")
+        
+        # Çevirmə prosesi
+        success = convert_pdf_to_docx(pdf_path, docx_path)
+        
+        # PDF faylını sil
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+        
+        if success and os.path.exists(docx_path):
+            return jsonify({
+                'success': True,
+                'message': '✅ PDF uğurla Word sənədinə çevrildi!',
+                'download_url': f'/download/{unique_id}.docx',
+                'filename': f'{unique_id}.docx'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': '❌ PDF çevrilə bilmədi. Zəhmət olmasa başqa fayl sınayın.'
+            })
+            
+    except Exception as e:
+        logger.error(f"Ümumi xəta: {e}")
+        # Təmizlik
+        for path in [pdf_path, docx_path]:
+            if 'path' in locals() and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except:
+                    pass
+        
+        return jsonify({
+            'success': False,
+            'error': f'❌ Xəta: {str(e)}'
+        })
 
 @app.route("/download/<filename>")
 def download(filename):
+    """Fayl endirmə endpoint"""
     try:
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         if os.path.exists(file_path) and filename.endswith('.docx'):
@@ -484,5 +468,4 @@ def cleanup_route():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # Production üçün debug False
     app.run(host="0.0.0.0", port=port, debug=False)
