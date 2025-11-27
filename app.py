@@ -13,9 +13,10 @@ import logging
 import io
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB
 UPLOAD_FOLDER = "uploads"
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB maksimum fayl ölçüsü
-CLEANUP_INTERVAL = 3600  # Hər 1 saat sil
+MAX_FILE_SIZE = 5 * 1024 * 1024
+CLEANUP_INTERVAL = 3600
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -56,32 +57,31 @@ def convert_pdf_to_docx(pdf_path, docx_path):
             
             for page_num, page in enumerate(pdf_reader.pages, 1):
                 try:
-                    # Səhifəni çıxart
                     text = page.extract_text()
                     
-                    if text:
+                    if text and len(text.strip()) > 0:
                         text = clean_text(text)
                         
-                        # Səhifə başlığı əlavə et
                         if page_num > 1:
                             doc.add_page_break()
                         
-                        # Mətn əlavə et
                         paragraph = doc.add_paragraph(text)
                         paragraph.style = 'Normal'
                         
                         print(f"[INFO] ({page_num}/{total_pages}) Səhifə uğurla çevrildi")
                     else:
                         print(f"[WARNING] ({page_num}/{total_pages}) Səhifədə mətn tapılmadı")
+                        if page_num > 1:
+                            doc.add_page_break()
+                        doc.add_paragraph("[Boş səhifə]")
                         
                 except Exception as e:
                     print(f"[ERROR] ({page_num}/{total_pages}) Səhifə xətası: {str(e)}")
-                    # Xəta olsa belə, sonrakı səhifəyə geç
                     if page_num > 1:
                         doc.add_page_break()
-                    doc.add_paragraph(f"[Səhifə {page_num} çevrilə bilmədi]")
+                    doc.add_paragraph(f"[Səhifə {page_num} çevrilə bilmədi: {str(e)[:50]}]")
+                    continue
         
-        # Word sənədini saxla
         doc.save(docx_path)
         print(f"[INFO] Word sənədi uğurla yaradıldı: {docx_path}")
         
@@ -94,19 +94,15 @@ def clean_text(text):
     if not text:
         return ""
     
-    # NULL bytes və idarəetmə simvollarını sil
     cleaned = ""
     for char in text:
         code = ord(char)
-        # XML-uyğun simvollar: 0x9, 0xA, 0xD, 0x20-0xD7FF, 0xE000-0xFFFD
         if (code == 0x9 or code == 0xA or code == 0xD or 
             (0x20 <= code <= 0xD7FF) or (0xE000 <= code <= 0xFFFD)):
             cleaned += char
         elif code < 32:
-            # Idarəetmə simvollarını boşluğa çevir
             cleaned += " "
     
-    # Çoxlu boşluqları tək boşluğa çevir
     while "  " in cleaned:
         cleaned = cleaned.replace("  ", " ")
     
@@ -273,7 +269,6 @@ HTML = """
             submitBtn.disabled = true;
             submitBtn.classList.add('opacity-50');
             
-            // Simulasiya progress
             let progress = 0;
             const interval = setInterval(() => {
                 progress += Math.random() * 30;
@@ -281,7 +276,6 @@ HTML = """
                 progressFill.style.width = progress + '%';
             }, 500);
             
-            // Formu göndər
             const formData = new FormData(e.target);
             fetch(e.target.action || '/', {
                 method: 'POST',
@@ -321,12 +315,6 @@ def index():
         if not pdf_file.filename.endswith(".pdf"):
             return render_template_string(HTML, error="❌ Yalnız PDF faylı qəbul edilir!")
         
-        if pdf_file.content_length and pdf_file.content_length > MAX_FILE_SIZE:
-            return render_template_string(
-                HTML, 
-                error=f"❌ Fayl çox böyükdür! Maksimum {MAX_FILE_SIZE // (1024*1024)} MB qəbul edilir."
-            )
-        
         pdf_path = None
         docx_path = None
         
@@ -337,12 +325,15 @@ def index():
             
             pdf_file.save(pdf_path)
             
-            if os.path.getsize(pdf_path) > MAX_FILE_SIZE:
+            file_size = os.path.getsize(pdf_path)
+            if file_size > MAX_FILE_SIZE:
                 os.remove(pdf_path)
                 return render_template_string(
                     HTML, 
                     error=f"❌ Fayl çox böyükdür! Maksimum {MAX_FILE_SIZE // (1024*1024)} MB qəbul edilir."
                 )
+            
+            print(f"[INFO] PDF yükləndi: {pdf_path} ({file_size} bytes)")
             
             convert_pdf_to_docx(pdf_path, docx_path)
             
@@ -357,7 +348,10 @@ def index():
             )
             
         except Exception as e:
-            logger.error(f"PDF çevirən xəta: {str(e)}")
+            error_msg = str(e)
+            print(f"[ERROR] Çevirən xəta: {error_msg}")
+            logger.error(f"PDF çevirən xəta: {error_msg}")
+            
             if pdf_path and os.path.exists(pdf_path):
                 try:
                     os.remove(pdf_path)
@@ -371,7 +365,7 @@ def index():
             
             return render_template_string(
                 HTML, 
-                error=f"❌ Xəta: PDF-ni Word-ə çevirərkən problem yaşandı. Zəhmət olmasa başqa fayl sınayın."
+                error=f"❌ Xəta: {error_msg[:100]}. Zəhmət olmasa başqa fayl sınayın."
             )
     
     return render_template_string(HTML)
@@ -394,4 +388,4 @@ def clean():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
