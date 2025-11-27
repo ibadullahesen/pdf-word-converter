@@ -1,3 +1,5 @@
-Flask
-pdf2docx
-gunicorn
+Flask==3.0.0
+pdf2docx==0.5.1
+PyPDF2==3.0.1
+python-docx==0.8.11
+Werkzeug==3.0.1
