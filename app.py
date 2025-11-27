@@ -7,6 +7,7 @@ import glob
 from datetime import datetime, timedelta
 from threading import Thread
 import time
+import logging
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
@@ -235,6 +236,9 @@ HTML = """
 </html>
 """
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     background_cleanup()
@@ -268,9 +272,20 @@ def index():
                     error=f"❌ Fayl çox böyükdür! Maksimum {MAX_FILE_SIZE // (1024*1024)} MB qəbul edilir."
                 )
             
-            cv = Converter(pdf_path)
-            cv.convert(docx_path, start=0, end=None)
-            cv.close()
+            try:
+                cv = Converter(pdf_path)
+                cv.convert(docx_path, start=0, end=None)
+                cv.close()
+            except Exception as e:
+                logger.warning(f"Birinci sınaqda xəta: {str(e)}")
+                # Səhifə-səhifə dönüştürmə cəhdi
+                try:
+                    cv = Converter(pdf_path)
+                    cv.convert(docx_path)  # Default parametrlərlə yenidən cəhd
+                    cv.close()
+                except Exception as e2:
+                    logger.error(f"Dönüştürmə uğursuz oldu: {str(e2)}")
+                    raise
             
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
@@ -283,6 +298,7 @@ def index():
             )
             
         except Exception as e:
+            logger.error(f"PDF çevirən xəta: {str(e)}")
             # Xəta baş verərsə, hər iki faylı sil
             for file_path in [pdf_path, docx_path]:
                 if os.path.exists(file_path):
